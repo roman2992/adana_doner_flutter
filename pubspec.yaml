@@ -1,0 +1,16 @@
+name: adana_doner
+description: Adana Doner cafe ordering app prototype
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/menu_board.jpg
