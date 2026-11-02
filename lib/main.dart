@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
 
 void main() => runApp(const AdanaApp());
 
@@ -7,37 +10,32 @@ const wine = Color(0xFF721E2A);
 const gold = Color(0xFFE8B85A);
 const cream = Color(0xFFFFF5E8);
 
-class FoodItem {
-  final String id, name, description, category, emoji;
-  final int price;
-  const FoodItem(this.id, this.name, this.description, this.category, this.price, this.emoji);
+
+// ВАЖНО: замени IP на IPv4-адрес компьютера, где запущен FastAPI.
+const String apiBaseUrl = 'http://192.168.1.3:8000';
+
+String formatPrice(double value) {
+  if (value == value.roundToDouble()) return value.toStringAsFixed(0);
+  return value.toStringAsFixed(2);
 }
 
-const foods = <FoodItem>[
-  FoodItem('combo1', 'Комбо 1', 'Куриный донер в лаваше или пите, картофель фри, кола, кетчуп', 'Комбо', 450, '🥙'),
-  FoodItem('combo2', 'Комбо 2', 'Говяжий донер в лаваше или пите, картофель фри, кола, кетчуп', 'Комбо', 550, '🥙'),
-  FoodItem('bisk_beef', 'Искендер кебаб', 'Донер из говядины с соусом', 'Донер из говядины', 800, '🍖'),
-  FoodItem('plate_beef', 'Донер на тарелке', 'Сочный говяжий донер с гарниром', 'Донер из говядины', 750, '🍽️'),
-  FoodItem('rice_beef', 'Донер на тарелке с рисом', 'Говяжий донер с рисом', 'Донер из говядины', 750, '🍛'),
-  FoodItem('lavash_beef', 'Донер в лаваше', 'Говяжий донер в тонком лаваше', 'Донер из говядины', 400, '🌯'),
-  FoodItem('sarma_beef', 'Сарма донер с сыром', 'Говяжий донер с сыром', 'Донер из говядины', 800, '🧀'),
-  FoodItem('pita_beef', 'Донер в пиде', 'Говяжий донер в турецкой лепёшке', 'Донер из говядины', 400, '🥙'),
-  FoodItem('pide_meat_cheese', 'Пиде с мясом и сыром', 'Турецкая лепёшка с мясом и сыром', 'Турецкая выпечка', 700, '🥖'),
-  FoodItem('pide_minced', 'Пиде с фаршем', 'Турецкая лепёшка с мясным фаршем', 'Турецкая выпечка', 550, '🥖'),
-  FoodItem('pide_cheese', 'Пиде с сыром', 'Турецкая лепёшка с сыром', 'Турецкая выпечка', 500, '🧀'),
-  FoodItem('pide_mix', 'Пиде с сыром и фаршем', 'Сыр и мясной фарш', 'Турецкая выпечка', 600, '🥖'),
-  FoodItem('pide_assorti', 'Пиде ассорти', 'Ассорти из начинок', 'Турецкая выпечка', 700, '🥖'),
-  FoodItem('soup_lentil', 'Чечевичный суп', 'Турецкий суп из красной чечевицы', 'Первые блюда', 250, '🍲'),
-  FoodItem('soup_chicken', 'Куриный суп', 'Домашний суп с курицей', 'Первые блюда', 250, '🍜'),
-  FoodItem('soup_mushroom', 'Крем-суп с грибами', 'Нежный сливочный суп с грибами', 'Первые блюда', 250, '🍄'),
-  FoodItem('isk_chicken', 'Искендер кебаб', 'Искендер из курицы', 'Донер из курицы', 650, '🍗'),
-  FoodItem('plate_chicken', 'Донер на тарелке', 'Куриный донер с гарниром', 'Донер из курицы', 600, '🍽️'),
-  FoodItem('rice_chicken', 'Донер на тарелке с рисом', 'Куриный донер с рисом', 'Донер из курицы', 600, '🍛'),
-  FoodItem('box_chicken', 'Донер бокс с курицей', 'Куриный донер в удобном боксе', 'Донер из курицы', 350, '🥡'),
-  FoodItem('lavash_chicken', 'Донер в лаваше', 'Куриный донер в тонком лаваше', 'Донер из курицы', 300, '🌯'),
-  FoodItem('sarma_chicken', 'Сарма донер с сыром', 'Куриный донер с сыром', 'Донер из курицы', 700, '🧀'),
-  FoodItem('pita_chicken', 'Донер в пиде', 'Куриный донер в турецкой лепёшке', 'Донер из курицы', 320, '🥙'),
-];
+class FoodItem {
+  final String id, name, description, category, emoji;
+  final int categoryId, mass;
+  final double price;
+
+  const FoodItem({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.category,
+    required this.categoryId,
+    required this.price,
+    required this.mass,
+    required this.emoji,
+  });
+}
+
 
 class AdanaApp extends StatelessWidget {
   const AdanaApp({super.key});
@@ -56,8 +54,88 @@ class _MenuPageState extends State<MenuPage> {
   String category = 'Все';
   bool searchOpen = false;
   String searchQuery = '';
+  bool isLoading = true;
+  String? loadError;
+  List<FoodItem> foods = [];
+  List<String> categories = ['Все'];
   final searchController = TextEditingController();
-  final categories = const ['Все', 'Комбо', 'Донер из говядины', 'Донер из курицы', 'Турецкая выпечка', 'Первые блюда'];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMenu();
+  }
+
+  Future<void> _loadMenu() async {
+    try {
+      final responses = await Future.wait([
+        http.get(Uri.parse('$apiBaseUrl/dishes/')).timeout(const Duration(seconds: 15)),
+        http.get(Uri.parse('$apiBaseUrl/categories/')).timeout(const Duration(seconds: 15)),
+      ]);
+
+      if (responses[0].statusCode != 200 || responses[1].statusCode != 200) {
+        throw Exception(
+          'Ошибка API: блюда — ${responses[0].statusCode}, категории — ${responses[1].statusCode}',
+        );
+      }
+
+      final dishesJson = jsonDecode(utf8.decode(responses[0].bodyBytes)) as List<dynamic>;
+      final categoriesJson = jsonDecode(utf8.decode(responses[1].bodyBytes)) as List<dynamic>;
+
+      final categoryNames = <int, String>{};
+      for (final raw in categoriesJson) {
+        final item = raw as Map<String, dynamic>;
+        categoryNames[(item['id'] as num).toInt()] = item['name']?.toString() ?? 'Другое';
+      }
+
+      final loadedFoods = dishesJson.map((raw) {
+        final item = raw as Map<String, dynamic>;
+        final categoryId = (item['category_id'] as num).toInt();
+        final categoryName = categoryNames[categoryId] ?? 'Другое';
+        final name = item['name']?.toString() ?? 'Без названия';
+        final description = item['description']?.toString() ?? '';
+        final price = double.tryParse(item['price']?.toString() ?? '') ?? 0.0;
+        final mass = (item['mass'] as num?)?.toInt() ?? 0;
+
+        String emoji = '🍽️';
+        final text = '$name $categoryName'.toLowerCase();
+        if (text.contains('drink') || text.contains('напит')) {
+          emoji = '🥤';
+        } else if (text.contains('chicken') || text.contains('кур')) {
+          emoji = '🍗';
+        } else if (text.contains('kebab') || text.contains('кебаб') || text.contains('донер')) {
+          emoji = '🥙';
+        }
+
+        return FoodItem(
+          id: item['id'].toString(),
+          name: name,
+          description: description,
+          category: categoryName,
+          categoryId: categoryId,
+          price: price,
+          mass: mass,
+          emoji: emoji,
+        );
+      }).toList();
+
+      if (!mounted) return;
+      setState(() {
+        foods = loadedFoods;
+        categories = ['Все', ...categoryNames.values.toSet()];
+        isLoading = false;
+        loadError = null;
+        if (!categories.contains(category)) category = 'Все';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        isLoading = false;
+        loadError = e.toString();
+      });
+    }
+  }
+
   @override
   void dispose() {
     searchController.dispose();
@@ -65,7 +143,7 @@ class _MenuPageState extends State<MenuPage> {
   }
 
   int get totalCount => cart.values.fold(0, (a, b) => a + b);
-  int get total => foods.fold(0, (sum, f) => sum + f.price * (cart[f.id] ?? 0));
+  double get total => foods.fold(0.0, (sum, f) => sum + f.price * (cart[f.id] ?? 0));
   void add(FoodItem item) => setState(() => cart[item.id] = (cart[item.id] ?? 0) + 1);
   void change(FoodItem item, int delta) => setState(() { final n = (cart[item.id] ?? 0) + delta; if (n <= 0) { cart.remove(item.id); } else { cart[item.id] = n; } });
 
@@ -128,16 +206,71 @@ class _MenuPageState extends State<MenuPage> {
             )),
           ),
         ),
-        SliverPadding(padding: const EdgeInsets.fromLTRB(16, 14, 16, 110), sliver: SliverGrid(delegate: SliverChildBuilderDelegate((context, i) => _foodCard(visible[i]), childCount: visible.length), gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, mainAxisSpacing: 12, crossAxisSpacing: 12, childAspectRatio: .72))),
+        if (isLoading)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.all(40),
+              child: Center(child: CircularProgressIndicator(color: wine)),
+            ),
+          )
+        else if (loadError != null)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                children: [
+                  const Icon(Icons.cloud_off, size: 42, color: wine),
+                  const SizedBox(height: 10),
+                  const Text('Не удалось загрузить меню', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Text(loadError!, textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: () {
+                      setState(() {
+                        isLoading = true;
+                        loadError = null;
+                      });
+                      _loadMenu();
+                    },
+                    child: const Text('Повторить'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else if (visible.isEmpty)
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.all(32),
+              child: Center(child: Text('В этой категории пока нет блюд')),
+            ),
+          )
+        else
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 110),
+            sliver: SliverGrid(
+              delegate: SliverChildBuilderDelegate(
+                (context, i) => _foodCard(visible[i]),
+                childCount: visible.length,
+              ),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                mainAxisSpacing: 12,
+                crossAxisSpacing: 12,
+                childAspectRatio: .72,
+              ),
+            ),
+          ),
       ])),
-      bottomNavigationBar: totalCount == 0 ? null : SafeArea(child: Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 12), child: FilledButton.icon(style: FilledButton.styleFrom(backgroundColor: wine, padding: const EdgeInsets.symmetric(vertical: 15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: _openCart, icon: const Icon(Icons.shopping_bag_outlined), label: Text('Корзина · $totalCount шт. · $total', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))),
+      bottomNavigationBar: totalCount == 0 ? null : SafeArea(child: Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 12), child: FilledButton.icon(style: FilledButton.styleFrom(backgroundColor: wine, padding: const EdgeInsets.symmetric(vertical: 15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16))), onPressed: _openCart, icon: const Icon(Icons.shopping_bag_outlined), label: Text('Корзина · $totalCount шт. · ${formatPrice(total)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))))),
     );
   }
 
 Widget _header() => Container(
     width: double.infinity,
-    margin: const EdgeInsets.all(14),
-    padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+    margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+    padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
     decoration: BoxDecoration(
       gradient: const LinearGradient(
         colors: [burgundy, Color(0xFF8C2935)],
@@ -222,7 +355,7 @@ Widget _header() => Container(
                 const SizedBox(height: 9),
                 Row(
                   children: [
-                    Expanded(child: Text('${f.price}', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: wine))),
+                    Expanded(child: Text(formatPrice(f.price), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900, color: wine))),
                     if (count == 0)
                       InkWell(
                         onTap: () => add(f),
@@ -294,7 +427,7 @@ Widget _header() => Container(
                     children: foods.where((f) => (cart[f.id] ?? 0) > 0).map((f) => ListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text(f.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                      subtitle: Text('${f.price} × ${cart[f.id]}'),
+                      subtitle: Text('${formatPrice(f.price)} × ${cart[f.id]}'),
                       trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -311,7 +444,7 @@ Widget _header() => Container(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Text('Итого', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                    Text('$total', style: const TextStyle(fontSize: 22, color: wine, fontWeight: FontWeight.w900)),
+                    Text(formatPrice(total), style: const TextStyle(fontSize: 22, color: wine, fontWeight: FontWeight.w900)),
                   ],
                 ),
                 const SizedBox(height: 14),
@@ -586,7 +719,7 @@ class _FoodDetailPageState extends State<FoodDetailPage> {
                         children: [
                           Expanded(
                             child: Text(
-                              '${item.price}',
+                              formatPrice(item.price),
                               style: const TextStyle(
                                 fontSize: 27,
                                 fontWeight: FontWeight.w900,
