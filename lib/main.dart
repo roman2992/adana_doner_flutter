@@ -464,11 +464,15 @@ Widget _header() => Container(
     );
   }
 
-  void _checkout() {
+  Future<void> _checkout() async {
     final name = TextEditingController();
     final phone = TextEditingController();
+    final clientIdController = TextEditingController();
+    final address = TextEditingController();
     final comment = TextEditingController();
     String delivery = 'Самовывоз';
+    bool isSubmitting = false;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -488,14 +492,21 @@ Widget _header() => Container(
                   TextField(controller: name, decoration: const InputDecoration(labelText: 'Ваше имя', border: OutlineInputBorder())),
                   const SizedBox(height: 10),
                   TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Телефон', hintText: '+7 ...', border: OutlineInputBorder())),
+                  const SizedBox(height: 10),
+                  TextField(controller: clientIdController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'ID клиента (client_id)', border: OutlineInputBorder())),
                   const SizedBox(height: 12),
                   const Text('Способ получения', style: TextStyle(fontWeight: FontWeight.bold)),
                   Wrap(
                     spacing: 8,
                     children: ['Самовывоз', 'Доставка'].map((v) => ChoiceChip(
-                      label: Text(v), selected: delivery == v, onSelected: (_) => refresh(() => delivery = v),
+                      label: Text(v), selected: delivery == v,
+                      onSelected: (_) => refresh(() => delivery = v),
                     )).toList(),
                   ),
+                  if (delivery == 'Доставка') ...[
+                    const SizedBox(height: 10),
+                    TextField(controller: address, maxLines: 2, decoration: const InputDecoration(labelText: 'Адрес доставки', border: OutlineInputBorder())),
+                  ],
                   const SizedBox(height: 10),
                   TextField(controller: comment, maxLines: 2, decoration: const InputDecoration(labelText: 'Комментарий к заказу', border: OutlineInputBorder())),
                   const SizedBox(height: 14),
@@ -503,26 +514,88 @@ Widget _header() => Container(
                     width: double.infinity,
                     child: FilledButton(
                       style: FilledButton.styleFrom(backgroundColor: wine, padding: const EdgeInsets.symmetric(vertical: 15)),
-                      onPressed: () {
-                        if (name.text.trim().isEmpty || phone.text.trim().isEmpty) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Укажите имя и телефон')));
+                      onPressed: isSubmitting ? null : () async {
+                        final clientId = int.tryParse(clientIdController.text.trim());
+                        if (name.text.trim().isEmpty || phone.text.trim().isEmpty || clientId == null || clientId <= 0) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Укажите имя, телефон и корректный ID клиента')));
                           return;
                         }
-                        final order = foods.where((f) => (cart[f.id] ?? 0) > 0).map((f) => '${f.name} × ${cart[f.id]}').join('\n');
-                        final orderTotal = total;
+                        if (delivery == 'Доставка' && address.text.trim().isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Укажите адрес доставки')));
+                          return;
+                        }
+                        final selectedFoods = foods.where((f) => (cart[f.id] ?? 0) > 0).toList();
+                        if (selectedFoods.isEmpty) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Корзина пуста')));
+                          return;
+                        }
+
+                        final orderLines = selectedFoods.map((f) => <String, int>{
+                          'dish_id': int.parse(f.id),
+                          'amount': cart[f.id]!,
+                        }).toList();
                         final customerName = name.text.trim();
-                        Navigator.pop(sheetContext);
-                        setState(() => cart.clear());
-                        showDialog(
-                          context: context,
-                          builder: (_) => AlertDialog(
-                            title: const Text('Заказ подготовлен!'),
-                            content: Text('Спасибо, $customerName!\n\n$order\n\nСпособ: $delivery\nИтого: $orderTotal\n\nЭто демонстрационный прототип: заказ пока не отправляется в кафе.'),
-                            actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отлично'))],
-                          ),
-                        );
+                        final orderText = selectedFoods.map((f) => '${f.name} × ${cart[f.id]}').join('\n');
+                        final orderTotal = total;
+                        final orderAddress = delivery == 'Самовывоз'
+                            ? 'Самовывоз${comment.text.trim().isEmpty ? '' : ' — ${comment.text.trim()}'}'
+                            : '${address.text.trim()}${comment.text.trim().isEmpty ? '' : ' — ${comment.text.trim()}'}';
+
+                        refresh(() => isSubmitting = true);
+                        try {
+                          final response = await http.post(
+                            Uri.parse('$apiBaseUrl/orders/'),
+                            headers: {'Content-Type': 'application/json'},
+                            body: jsonEncode({
+                              'address': orderAddress,
+                              'order_phone_number': phone.text.trim(),
+                              'client_id': clientId,
+                              'order_lines': orderLines,
+                            }),
+                          ).timeout(const Duration(seconds: 20));
+
+                          if (response.statusCode != 201) {
+                            String errorMessage = response.body;
+                            try {
+                              final decoded = jsonDecode(utf8.decode(response.bodyBytes));
+                              if (decoded is Map && decoded['detail'] != null) {
+                                errorMessage = decoded['detail'].toString();
+                              }
+                            } catch (_) {}
+                            throw Exception('HTTP ${response.statusCode}: $errorMessage');
+                          }
+
+                          if (!mounted || !sheetContext.mounted) return;
+
+                          // Заказ уже создан сервером (HTTP 201). Закрываем форму,
+                          // очищаем корзину и показываем результат после кадра.
+                          setState(() => cart.clear());
+                          Navigator.of(sheetContext).pop();
+
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Заказ оформлен! Спасибо, $customerName. '
+                                  'Сумма: ${formatPrice(orderTotal)}',
+                                ),
+                                duration: const Duration(seconds: 4),
+                              ),
+                            );
+                          });
+                        } catch (e) {
+                          if (!mounted || !sheetContext.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Не удалось оформить заказ: $e')),
+                          );
+                        } finally {
+                          if (sheetContext.mounted) refresh(() => isSubmitting = false);
+                        }
                       },
-                      child: const Text('Подтвердить заказ'),
+                      child: isSubmitting
+                          ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          : const Text('Подтвердить заказ'),
                     ),
                   ),
                 ],
@@ -531,7 +604,18 @@ Widget _header() => Container(
           ),
         ),
       ),
-    );
+    ).whenComplete(() {
+      // BottomSheet may still be completing its reverse transition and the
+      // TextFields can receive a final rebuild. Dispose controllers only after
+      // the route transition has had time to finish.
+      Future<void>.delayed(const Duration(milliseconds: 500), () {
+        name.dispose();
+        phone.dispose();
+        clientIdController.dispose();
+        address.dispose();
+        comment.dispose();
+      });
+    });
   }
 
 }
